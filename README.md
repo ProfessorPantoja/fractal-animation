@@ -1,39 +1,41 @@
-# 🌀 Fractal Vivo
+# 🌊 Tinta Viva
 
-Uma animação interativa em WebGL inspirada em arte fractal feita no **Ultra Fractal** —
-aquelas composições de quadrados derretidos com espirais, que mesmo estáticas já parecem se mover.
-Aqui, elas se movem de verdade.
+Uma **simulação de fluidos de verdade** rodando na GPU do navegador — tinta colorida que
+escorre, redemoinha e se mistura como fumaça líquida. Não é um efeito pré-pronto: são as
+equações de Navier-Stokes (método dos fluidos estáveis de Jos Stam) resolvidas em tempo
+real em WebGL2, com advecção semi-lagrangiana, confinamento de vorticidade e projeção de
+pressão por iterações de Jacobi.
+
+**Página principal:** `index.html` (o fluido)
+**Bônus:** `mosaico.html` (experimento anterior — mosaico de espirais estilo Ultra Fractal)
 
 ## Como usar
 
-Basta abrir o `index.html` em qualquer navegador moderno. Não precisa de servidor,
-não precisa instalar nada — é um arquivo único, tudo roda na GPU via WebGL.
-
-## O que acontece
-
-A imagem é gerada em tempo real por um *fragment shader*:
-
-1. **Grade diagonal de células** — cada célula é um "quadrado arredondado" com anéis
-   concêntricos de cor chapada (posterizada), como curvas de nível de tinta.
-2. **Espiral no centro de cada célula** — uma rotação com decaimento exponencial
-   (o clássico *swirl* do Ultra Fractal), cada uma girando devagar no seu próprio ritmo.
-3. **Domain warping** — camadas de vórtices em escalas diferentes distorcem as
-   coordenadas antes do padrão ser desenhado, criando o aspecto de mármore líquido.
-4. **Gradiente térmico** — paleta fria (roxos, violeta, teal) que esquenta na diagonal
-   para vermelhos, laranjas e amarelos.
-
-A animação própria vem de animar os *parâmetros* do warp — as fases das espirais e a
-deriva do campo — e não a imagem pronta.
+Abra o `index.html` em qualquer navegador moderno (precisa de WebGL2). Não precisa de
+servidor nem de instalar nada. Em celulares a resolução da simulação é reduzida
+automaticamente para manter a fluidez.
 
 ## Controles
 
 | Controle | Efeito |
 |---|---|
-| **Mover o mouse** | cria um vórtice que segue o cursor e arrasta a tinta (com inércia) |
-| **Clicar / arrastar** | vórtice mais forte |
-| `←` / `→` | diminui / aumenta a velocidade da animação (aceita valores negativos = tempo reverso) |
-| `↑` / `↓` | zoom in / zoom out |
-| `Espaço` | pausa / retoma a animação própria (o mouse continua funcionando) |
-| `C` | gira a paleta de cores |
-| `w` / `Shift+W` | mais / menos turbulência no fluxo |
+| **Mouse / dedo** (arraste) | empurra a tinta — clique segurado injeta mais cor |
+| `B` | explosão de splats coloridos aleatórios |
+| `C` | troca a paleta (arco-íris → oceano → fogo → prata) |
+| `↑` / `↓` | mais / menos redemoinhos (força da vorticidade) |
+| `←` / `→` | rastro some mais rápido / dura mais |
+| `Espaço` | pausa |
+| `A` | liga/desliga o piloto automático (dois "pincéis fantasmas" em curvas de Lissajous) |
 | `H` | mostra / esconde a ajuda |
+
+## Como funciona (resumo do pipeline por quadro)
+
+1. **Vorticidade** — calcula o rotacional do campo de velocidade e injeta força de volta
+   nos redemoinhos, compensando a dissipação numérica (é o que mantém o fluido "vivo").
+2. **Projeção de pressão** — resolve ∇²p = ∇·v com ~20 iterações de Jacobi e subtrai o
+   gradiente, tornando o campo incompressível (é o que faz parecer líquido).
+3. **Advecção** — o próprio campo de velocidade transporta a si mesmo e a tinta
+   (semi-lagrangiano: cada pixel olha "de onde eu vim?").
+4. **Splats** — mouse, toque e os emissores automáticos injetam tinta + força.
+5. **Display** — sombreamento por gradiente (relevo sutil) e tone mapping suave para a
+   tinta acumulada saturar sem estourar.

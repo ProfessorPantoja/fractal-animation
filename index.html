@@ -2,338 +2,576 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Fractal Vivo — Ultra Fractal animado</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Fluido — tinta viva</title>
 <style>
   html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
-  canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
   #hud {
-    position: fixed; left: 16px; bottom: 16px;
+    position: fixed; left: 14px; bottom: 14px;
     font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px; line-height: 1.7;
-    color: rgba(255,255,255,0.85); background: rgba(10,8,20,0.55);
+    color: rgba(255,255,255,0.85); background: rgba(8,8,16,0.55);
     padding: 12px 16px; border-radius: 10px; backdrop-filter: blur(6px);
     border: 1px solid rgba(255,255,255,0.12);
-    transition: opacity 0.6s; pointer-events: none; user-select: none;
-    max-width: 340px;
+    transition: opacity 0.6s; user-select: none; max-width: 340px;
   }
-  #hud.hidden { opacity: 0; }
-  #hud b { color: #c9a8ff; }
+  #hud.hidden { opacity: 0; pointer-events: none; }
+  #hud b { color: #8fd8ff; }
   #hud .title { font-size: 15px; color: #fff; margin-bottom: 4px; font-weight: 600; }
+  #hud a { color: #c9a8ff; }
   kbd {
     background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.25);
     border-radius: 4px; padding: 0 5px; font-family: inherit; font-size: 12px;
+  }
+  #err {
+    display: none; position: fixed; inset: 0; place-content: center; text-align: center;
+    color: #fff; font-family: system-ui, sans-serif; padding: 24px;
   }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="hud">
-  <div class="title">🌀 Fractal Vivo</div>
-  <b>Mouse</b> — cria um vórtice que arrasta a tinta<br>
-  <b>Clique / arraste</b> — vórtice mais forte<br>
-  <kbd>←</kbd><kbd>→</kbd> velocidade &nbsp; <kbd>↑</kbd><kbd>↓</kbd> zoom<br>
-  <kbd>Espaço</kbd> pausa &nbsp; <kbd>C</kbd> gira as cores &nbsp; <kbd>W</kbd> +/− turbulência<br>
-  <kbd>H</kbd> esconde esta ajuda
+  <div class="title">🌊 Tinta Viva — fluido de verdade</div>
+  <b>Mouse / dedo</b> — empurra a tinta (arraste!)<br>
+  <kbd>B</kbd> explosão de cor &nbsp; <kbd>C</kbd> troca a paleta<br>
+  <kbd>↑</kbd><kbd>↓</kbd> redemoinhos &nbsp; <kbd>←</kbd><kbd>→</kbd> duração do rastro<br>
+  <kbd>Espaço</kbd> pausa &nbsp; <kbd>A</kbd> liga/desliga o piloto automático<br>
+  <kbd>H</kbd> esconde &nbsp; · &nbsp; <a href="mosaico.html">versão mosaico →</a>
+</div>
+<div id="err">
+  <div>
+    <h2>Seu navegador não suporta WebGL2 com texturas float 😢</h2>
+    <p>Tente no computador, ou veja a <a href="mosaico.html" style="color:#c9a8ff">versão mosaico</a>.</p>
+  </div>
 </div>
 
-<script id="frag" type="x-shader/x-fragment">
-precision highp float;
-
-uniform vec2  uRes;
-uniform float uTime;       // tempo da animação própria (pausável)
-uniform vec2  uMouse;      // posição do mouse em coords do padrão
-uniform float uMouseAmp;   // força atual do vórtice do mouse (com inércia)
-uniform float uMouseSpin;  // fase acumulada do giro do mouse
-uniform float uZoom;
-uniform float uPalShift;   // rotação da paleta (tecla C)
-uniform float uTurb;       // turbulência extra (tecla W)
-
-// ---------- utilidades ----------
-float hash21(vec2 p) {
-  p = fract(p * vec2(234.34, 435.345));
-  p += dot(p, p + 34.23);
-  return fract(p.x * p.y);
-}
-vec2 hash22(vec2 p) {
-  float n = hash21(p);
-  return vec2(n, hash21(p + n + 17.7));
-}
-mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
-
-// ---------- paletas tiradas da imagem de referência ----------
-// lado frio: roxos profundos, violeta, teal, magenta
-vec3 coolPal(float i) {
-  vec3 c[8];
-  c[0] = vec3(0.075, 0.055, 0.13);  // quase preto arroxeado
-  c[1] = vec3(0.24,  0.13,  0.38);  // roxo escuro
-  c[2] = vec3(0.44,  0.30,  0.80);  // violeta
-  c[3] = vec3(0.58,  0.44,  0.95);  // roxo claro
-  c[4] = vec3(0.33,  0.09,  0.10);  // vinho
-  c[5] = vec3(0.16,  0.62,  0.50);  // teal
-  c[6] = vec3(0.13,  0.35,  0.24);  // verde escuro
-  c[7] = vec3(0.68,  0.16,  0.70);  // magenta
-  int k = int(mod(i, 8.0));
-  for (int j = 0; j < 8; j++) if (j == k) return c[j];
-  return c[0];
-}
-// lado quente: vermelhos, laranjas, amarelos (canto da referência)
-vec3 warmPal(float i) {
-  vec3 c[8];
-  c[0] = vec3(0.10, 0.075, 0.06);   // quase preto
-  c[1] = vec3(0.55, 0.11,  0.07);   // vermelho escuro
-  c[2] = vec3(0.85, 0.30,  0.10);   // laranja-vermelho
-  c[3] = vec3(0.92, 0.60,  0.16);   // laranja
-  c[4] = vec3(0.95, 0.82,  0.32);   // amarelo
-  c[5] = vec3(0.47, 0.36,  0.88);   // roxo de contraste
-  c[6] = vec3(0.42, 0.58,  0.42);   // verde acinzentado
-  c[7] = vec3(0.62, 0.13,  0.10);   // tijolo
-  int k = int(mod(i, 8.0));
-  for (int j = 0; j < 8; j++) if (j == k) return c[j];
-  return c[0];
-}
-
-// ---------- o coração do efeito: campo de vórtices ----------
-// Aplica redemoinhos centrados nos pontos de uma grade jitterada.
-// O ângulo decai exponencialmente -> espiral apertada no centro,
-// exatamente como o transform "swirl" do Ultra Fractal.
-vec2 swirlLayer(vec2 p, float scale, float strength, float t, float seed) {
-  vec2 g = p * scale;
-  vec2 id = floor(g);
-  vec2 f = fract(g);
-  vec2 disp = vec2(0.0);
-  for (int y = -1; y <= 1; y++)
-  for (int x = -1; x <= 1; x++) {
-    vec2 off = vec2(float(x), float(y));
-    vec2 h = hash22(id + off + seed);
-    vec2 center = off + 0.5 + 0.55 * (h - 0.5);
-    vec2 d = f - center;
-    float r = length(d);
-    // fase própria de cada vórtice: gira devagar, cada um no seu ritmo
-    float phase = t * (0.4 + 0.7 * h.x) * (h.y > 0.5 ? 1.0 : -1.0);
-    float ang = strength * exp(-r * r * 5.0) * (1.0 + 0.35 * sin(phase + h.x * 6.2831));
-    ang += 0.6 * strength * exp(-r * r * 22.0) * sin(phase * 1.7); // núcleo extra apertado
-    vec2 rd = rot(ang) * d;
-    disp += (rd - d);
-  }
-  return p + disp / scale;
-}
-
-// vórtice do mouse: um redemoinho grande que segue o cursor
-vec2 mouseSwirl(vec2 p) {
-  vec2 d = p - uMouse;
-  float r = length(d);
-  float ang = uMouseAmp * exp(-r * r * 2.2) * (2.2 + 0.6 * sin(uMouseSpin));
-  return uMouse + rot(ang) * d;
-}
-
-void main() {
-  vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
-
-  // grade diagonal, como na referência (~ -15 graus)
-  vec2 p = rot(-0.26) * uv * uZoom;
-
-  float t = uTime;
-
-  // deriva lenta do campo inteiro (a "correnteza" de fundo)
-  p += 0.06 * vec2(sin(t * 0.11), cos(t * 0.09));
-
-  // vórtice interativo do mouse (aplicado antes, afeta tudo)
-  p = mouseSwirl(p);
-
-  // duas camadas suaves de redemoinhos = o "derretido" entre as células
-  float w = uTurb;
-  p = swirlLayer(p, 0.45, 0.85 * w, t,        3.1);
-  p = swirlLayer(p, 1.30, 0.45 * w, t * 1.3, 17.7);
-
-  // ---------- padrão base: células com anéis concêntricos ----------
-  vec2 cellId = floor(p);
-  vec2 q = fract(p) - 0.5;
-  float h = hash21(cellId);
-  float h2 = hash21(cellId + 47.0);
-
-  // espiral apertada no CENTRO de cada célula (a assinatura da referência)
-  float rq = length(q);
-  float dir = (h > 0.5) ? 1.0 : -1.0;
-  float spinPh = t * (0.25 + 0.5 * h2) * dir;
-  float curl = dir * (2.6 + 1.5 * h2) * exp(-rq * 5.0);
-  q = rot(curl + 0.5 * sin(spinPh)) * q;
-
-  // distância "quadrado arredondado" (mistura Chebyshev + euclidiana);
-  // perto do centro fica mais circular, para a espiral sair lisa
-  float dSq = max(abs(q.x), abs(q.y));
-  float dCi = length(q);
-  float d = mix(dSq, dCi, mix(0.75, 0.35, smoothstep(0.0, 0.35, rq)));
-
-  // ondulação suave nas bordas dos anéis (tinta escorrendo)
-  d += 0.035 * sin(atan(q.y, q.x) * 4.0 + h * 40.0 + t * 0.4);
-
-  // bandas chapadas (posterização = curvas de nível da referência)
-  float nBands = 6.0;
-  float bd = clamp(d * 2.0, 0.0, 1.0);
-  float band = floor(bd * nBands);
-
-  // ---------- cor: gradiente diagonal frio -> quente ----------
-  // na referência o canto inferior-direito pega fogo
-  float diag = dot(uv, normalize(vec2(1.0, -0.55)));
-  float warmth = smoothstep(0.10, 0.50, diag + 0.15 * (h - 0.5));
-  // ilhas de cor invertida ocasionais (como o bloco ciano da referência)
-  if (hash21(cellId + 91.0) > 0.94) warmth = 1.0 - warmth;
-
-  // cada célula tem uma família de cor; os anéis variam ao redor dela
-  float baseIdx = floor(h * 8.0) + uPalShift;
-  float idx = baseIdx + band;
-  vec3 colCool = coolPal(idx);
-  vec3 colWarm = warmPal(idx + 1.0);
-  vec3 col = mix(colCool, colWarm, warmth);
-
-  // "rejunte" escuro entre as células (o fundo quase preto da referência)
-  float rim = smoothstep(0.36, 0.48, d);
-  col = mix(col, col * 0.22, rim * 0.85);
-
-  // contorno fino entre bandas (o traço que separa as camadas de tinta)
-  float edge = fract(bd * nBands);
-  float line = smoothstep(0.0, 0.12, edge) * smoothstep(1.0, 0.88, edge);
-  col *= 0.62 + 0.38 * line;
-
-  // respiração sutil de brilho (a imagem "pulsa" devagar)
-  col *= 0.92 + 0.08 * sin(t * 0.35 + d * 6.0 + h * 6.2831);
-
-  // vinheta leve
-  col *= 1.0 - 0.35 * dot(uv, uv);
-
-  gl_FragColor = vec4(col, 1.0);
-}
-</script>
-
 <script>
-const canvas = document.getElementById('c');
-const gl = canvas.getContext('webgl', { antialias: true });
+'use strict';
+// ============================================================
+// Simulação de fluidos (Navier-Stokes estável) na GPU.
+// Método clássico de Jos Stam: advecção semi-lagrangiana,
+// confinamento de vorticidade e projeção de pressão (Jacobi).
+// ============================================================
 
-// ---------- compilação do shader ----------
-const VERT = `attribute vec2 aPos; void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }`;
-function compile(type, src) {
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { alpha: false, depth: false, stencil: false, antialias: false });
+const extCBF = gl && gl.getExtension('EXT_color_buffer_float');
+if (!gl || !extCBF) {
+  document.getElementById('err').style.display = 'grid';
+  document.getElementById('hud').style.display = 'none';
+  throw new Error('WebGL2/float indisponível');
+}
+
+const isMobile = /Mobi|Android/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && innerWidth < 900);
+
+const config = {
+  SIM_RES:      isMobile ? 96  : 144,   // resolução da grade de velocidade
+  DYE_RES:      isMobile ? 384 : 864,   // resolução da tinta
+  PRESSURE_ITER: isMobile ? 14 : 22,
+  DENSITY_DISS: 0.8,    // ← → : quão rápido a tinta some
+  VELOCITY_DISS: 0.18,
+  CURL:         26.0,   // ↑ ↓ : força dos redemoinhos
+  SPLAT_RADIUS: 0.28,
+  SPLAT_FORCE:  6000,
+  AUTO:         true,   // piloto automático
+  PAUSED:       false,
+  PALETTE:      0,
+};
+
+// ---------- shaders ----------
+const VERT = `#version 300 es
+precision highp float;
+in vec2 aPos;
+out vec2 vUv;
+out vec2 vL, vR, vT, vB;
+uniform vec2 texelSize;
+void main () {
+  vUv = aPos * 0.5 + 0.5;
+  vL = vUv - vec2(texelSize.x, 0.0);
+  vR = vUv + vec2(texelSize.x, 0.0);
+  vT = vUv + vec2(0.0, texelSize.y);
+  vB = vUv - vec2(0.0, texelSize.y);
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+
+const FRAG_COPY = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 frag;
+uniform sampler2D uTexture;
+uniform float uScale;
+void main () { frag = uScale * texture(uTexture, vUv); }`;
+
+const FRAG_SPLAT = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 frag;
+uniform sampler2D uTarget;
+uniform float aspectRatio;
+uniform vec3 color;
+uniform vec2 point;
+uniform float radius;
+void main () {
+  vec2 p = vUv - point;
+  p.x *= aspectRatio;
+  vec3 splat = exp(-dot(p, p) / radius) * color;
+  vec3 base = texture(uTarget, vUv).xyz;
+  frag = vec4(base + splat, 1.0);
+}`;
+
+const FRAG_ADVECTION = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 frag;
+uniform sampler2D uVelocity;
+uniform sampler2D uSource;
+uniform vec2 texelSize;
+uniform float dt;
+uniform float dissipation;
+void main () {
+  vec2 coord = vUv - dt * texture(uVelocity, vUv).xy * texelSize;
+  vec4 result = texture(uSource, coord);
+  float decay = 1.0 + dissipation * dt;
+  frag = result / decay;
+}`;
+
+const FRAG_DIVERGENCE = `#version 300 es
+precision highp float;
+in vec2 vUv, vL, vR, vT, vB; out vec4 frag;
+uniform sampler2D uVelocity;
+void main () {
+  float L = texture(uVelocity, vL).x;
+  float R = texture(uVelocity, vR).x;
+  float T = texture(uVelocity, vT).y;
+  float B = texture(uVelocity, vB).y;
+  vec2 C = texture(uVelocity, vUv).xy;
+  if (vL.x < 0.0) { L = -C.x; }
+  if (vR.x > 1.0) { R = -C.x; }
+  if (vT.y > 1.0) { T = -C.y; }
+  if (vB.y < 0.0) { B = -C.y; }
+  frag = vec4(0.5 * (R - L + T - B), 0.0, 0.0, 1.0);
+}`;
+
+const FRAG_CURL = `#version 300 es
+precision highp float;
+in vec2 vUv, vL, vR, vT, vB; out vec4 frag;
+uniform sampler2D uVelocity;
+void main () {
+  float L = texture(uVelocity, vL).y;
+  float R = texture(uVelocity, vR).y;
+  float T = texture(uVelocity, vT).x;
+  float B = texture(uVelocity, vB).x;
+  frag = vec4(R - L - T + B, 0.0, 0.0, 1.0);
+}`;
+
+const FRAG_VORTICITY = `#version 300 es
+precision highp float;
+in vec2 vUv, vL, vR, vT, vB; out vec4 frag;
+uniform sampler2D uVelocity;
+uniform sampler2D uCurl;
+uniform float curl;
+uniform float dt;
+void main () {
+  float L = texture(uCurl, vL).x;
+  float R = texture(uCurl, vR).x;
+  float T = texture(uCurl, vT).x;
+  float B = texture(uCurl, vB).x;
+  float C = texture(uCurl, vUv).x;
+  vec2 force = 0.5 * vec2(abs(T) - abs(B), abs(R) - abs(L));
+  force /= length(force) + 0.0001;
+  force *= curl * C;
+  force.y *= -1.0;
+  vec2 velocity = texture(uVelocity, vUv).xy + force * dt;
+  velocity = clamp(velocity, vec2(-1000.0), vec2(1000.0));
+  frag = vec4(velocity, 0.0, 1.0);
+}`;
+
+const FRAG_PRESSURE = `#version 300 es
+precision highp float;
+in vec2 vUv, vL, vR, vT, vB; out vec4 frag;
+uniform sampler2D uPressure;
+uniform sampler2D uDivergence;
+void main () {
+  float L = texture(uPressure, vL).x;
+  float R = texture(uPressure, vR).x;
+  float T = texture(uPressure, vT).x;
+  float B = texture(uPressure, vB).x;
+  float divergence = texture(uDivergence, vUv).x;
+  frag = vec4((L + R + B + T - divergence) * 0.25, 0.0, 0.0, 1.0);
+}`;
+
+const FRAG_GRADIENT = `#version 300 es
+precision highp float;
+in vec2 vUv, vL, vR, vT, vB; out vec4 frag;
+uniform sampler2D uPressure;
+uniform sampler2D uVelocity;
+void main () {
+  float L = texture(uPressure, vL).x;
+  float R = texture(uPressure, vR).x;
+  float T = texture(uPressure, vT).x;
+  float B = texture(uPressure, vB).x;
+  vec2 velocity = texture(uVelocity, vUv).xy;
+  velocity -= vec2(R - L, T - B);
+  frag = vec4(velocity, 0.0, 1.0);
+}`;
+
+const FRAG_DISPLAY = `#version 300 es
+precision highp float;
+in vec2 vUv, vL, vR, vT, vB; out vec4 frag;
+uniform sampler2D uTexture;
+uniform vec2 texelSize;
+void main () {
+  vec3 c = texture(uTexture, vUv).rgb;
+  // sombreamento sutil: gradiente da densidade vira "relevo" 3D
+  vec3 lc = texture(uTexture, vL).rgb;
+  vec3 rc = texture(uTexture, vR).rgb;
+  vec3 tc = texture(uTexture, vT).rgb;
+  vec3 bc = texture(uTexture, vB).rgb;
+  float dx = length(rc) - length(lc);
+  float dy = length(tc) - length(bc);
+  vec3 n = normalize(vec3(dx, dy, length(texelSize) * 2.0));
+  float diffuse = clamp(dot(n, vec3(0.0, 0.0, 1.0)) + 0.7, 0.7, 1.15);
+  c *= diffuse;
+  // tone mapping suave: tinta acumulada satura sem virar mancha chapada
+  c = 1.0 - exp(-c * 1.6);
+  c = pow(c, vec3(0.9));
+  frag = vec4(c, 1.0);
+}`;
+
+// ---------- infraestrutura GL ----------
+function compileShader(type, source) {
   const s = gl.createShader(type);
-  gl.shaderSource(s, src);
+  gl.shaderSource(s, source);
   gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
-    throw new Error(gl.getShaderInfoLog(s));
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
   return s;
 }
-const prog = gl.createProgram();
-gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
-gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, document.getElementById('frag').textContent));
-gl.linkProgram(prog);
-if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
-  throw new Error(gl.getProgramInfoLog(prog));
-gl.useProgram(prog);
+const vertShader = compileShader(gl.VERTEX_SHADER, VERT);
+function makeProgram(fragSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, vertShader);
+  gl.attachShader(p, compileShader(gl.FRAGMENT_SHADER, fragSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const uniforms = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) {
+    const name = gl.getActiveUniform(p, i).name;
+    uniforms[name] = gl.getUniformLocation(p, name);
+  }
+  return { program: p, uniforms };
+}
 
+const progCopy       = makeProgram(FRAG_COPY);
+const progSplat      = makeProgram(FRAG_SPLAT);
+const progAdvection  = makeProgram(FRAG_ADVECTION);
+const progDivergence = makeProgram(FRAG_DIVERGENCE);
+const progCurl       = makeProgram(FRAG_CURL);
+const progVorticity  = makeProgram(FRAG_VORTICITY);
+const progPressure   = makeProgram(FRAG_PRESSURE);
+const progGradient   = makeProgram(FRAG_GRADIENT);
+const progDisplay    = makeProgram(FRAG_DISPLAY);
+
+// triângulo que cobre a tela
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
 const buf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, buf);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
-const aPos = gl.getAttribLocation(prog, 'aPos');
-gl.enableVertexAttribArray(aPos);
-gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
-const U = {};
-for (const name of ['uRes','uTime','uMouse','uMouseAmp','uMouseSpin','uZoom','uPalShift','uTurb'])
-  U[name] = gl.getUniformLocation(prog, name);
-
-// ---------- estado ----------
-const state = {
-  time: 0,
-  speed: 1.0,        // ← →
-  zoom: 4.2,         // ↑ ↓
-  targetZoom: 4.2,
-  palShift: 0,       // C
-  turb: 1.0,         // W / Shift+W
-  paused: false,     // espaço
-  mouse: { x: 0, y: 0 },        // alvo (posição real do cursor)
-  smooth: { x: 0, y: 0 },       // posição com inércia
-  amp: 0, targetAmp: 0,         // força do vórtice
-  spin: 0,
-  down: false,
-};
-
-function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  canvas.width  = innerWidth  * dpr;
-  canvas.height = innerHeight * dpr;
-  gl.viewport(0, 0, canvas.width, canvas.height);
-}
-addEventListener('resize', resize);
-resize();
-
-// converte pixel do mouse para o mesmo espaço de coordenadas do shader
-function toPattern(px, py) {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const x = (px * dpr - 0.5 * canvas.width)  / canvas.height;
-  const y = (0.5 * canvas.height - py * dpr) / canvas.height;
-  // mesma rotação e zoom do shader
-  const a = -0.26, c = Math.cos(a), s = Math.sin(a);
-  return { x: (c * x - s * y) * state.zoom, y: (s * x + c * y) * state.zoom };
+function blit(target) {
+  if (target == null) {
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  } else {
+    gl.viewport(0, 0, target.width, target.height);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+  }
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
-let lastMove = 0;
-addEventListener('pointermove', (e) => {
-  const p = toPattern(e.clientX, e.clientY);
-  // velocidade do mouse alimenta a força do vórtice
-  const dx = p.x - state.mouse.x, dy = p.y - state.mouse.y;
-  const v = Math.min(Math.hypot(dx, dy) * 2.5, 1.2);
-  state.targetAmp = Math.max(state.targetAmp, state.down ? 1.4 : 0.35 + v);
-  state.mouse = p;
-  lastMove = performance.now();
-});
-addEventListener('pointerdown', (e) => {
-  state.down = true;
-  state.mouse = toPattern(e.clientX, e.clientY);
-  state.targetAmp = 1.4;
-});
-addEventListener('pointerup', () => { state.down = false; });
+function createFBO(w, h, internalFormat, format, type, filter) {
+  const texture = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, w, h, 0, format, type, null);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  return {
+    texture, fbo, width: w, height: h,
+    texelSizeX: 1 / w, texelSizeY: 1 / h,
+    attach(id) {
+      gl.activeTexture(gl.TEXTURE0 + id);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      return id;
+    },
+  };
+}
+function createDoubleFBO(w, h, internalFormat, format, type, filter) {
+  let fbo1 = createFBO(w, h, internalFormat, format, type, filter);
+  let fbo2 = createFBO(w, h, internalFormat, format, type, filter);
+  return {
+    width: w, height: h,
+    texelSizeX: fbo1.texelSizeX, texelSizeY: fbo1.texelSizeY,
+    get read() { return fbo1; },
+    get write() { return fbo2; },
+    swap() { const t = fbo1; fbo1 = fbo2; fbo2 = t; },
+  };
+}
 
+function simSize(res) {
+  const aspect = gl.drawingBufferWidth / gl.drawingBufferHeight;
+  return aspect >= 1
+    ? { w: Math.round(res * aspect), h: res }
+    : { w: res, h: Math.round(res / aspect) };
+}
+
+let velocity, dye, pressure, divergence, curlTex;
+function initFramebuffers() {
+  const sim = simSize(config.SIM_RES);
+  const dyeS = simSize(config.DYE_RES);
+  const HF = gl.HALF_FLOAT;
+  velocity   = createDoubleFBO(sim.w, sim.h, gl.RG16F,   gl.RG,   HF, gl.LINEAR);
+  dye        = createDoubleFBO(dyeS.w, dyeS.h, gl.RGBA16F, gl.RGBA, HF, gl.LINEAR);
+  pressure   = createDoubleFBO(sim.w, sim.h, gl.R16F,    gl.RED,  HF, gl.NEAREST);
+  divergence = createFBO      (sim.w, sim.h, gl.R16F,    gl.RED,  HF, gl.NEAREST);
+  curlTex    = createFBO      (sim.w, sim.h, gl.R16F,    gl.RED,  HF, gl.NEAREST);
+}
+
+function resizeCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, isMobile ? 1 : 1.5);
+  const w = Math.floor(innerWidth * dpr), h = Math.floor(innerHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+    initFramebuffers();
+  }
+}
+addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// ---------- cores ----------
+function HSVtoRGB(h, s, v) {
+  const i = Math.floor(h * 6), f = h * 6 - i;
+  const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+  switch (i % 6) {
+    case 0: return [v, t, p];
+    case 1: return [q, v, p];
+    case 2: return [p, v, t];
+    case 3: return [p, q, v];
+    case 4: return [t, p, v];
+    default: return [v, p, q];
+  }
+}
+// paletas: cada uma mapeia um "instante" para uma cor de tinta
+const palettes = [
+  h => HSVtoRGB(h % 1, 1.0, 1.0),                                  // arco-íris
+  h => HSVtoRGB(0.52 + 0.25 * Math.sin(h * 6.28), 0.9, 1.0),       // oceano (azuis/roxos/teal)
+  h => HSVtoRGB(0.99 + 0.13 * Math.sin(h * 6.28), 0.95, 1.0),      // fogo (vermelho/laranja/rosa)
+  h => { const v = 0.6 + 0.4 * Math.sin(h * 12.5); return [v, v, v]; }, // prata
+];
+let hueClock = Math.random();
+function inkColor(strength = 1) {
+  const c = palettes[config.PALETTE](hueClock);
+  return [c[0] * 0.22 * strength, c[1] * 0.22 * strength, c[2] * 0.22 * strength];
+}
+
+// ---------- splats (injeção de tinta + força) ----------
+function splat(x, y, dx, dy, color) {
+  gl.useProgram(progSplat.program);
+  gl.uniform1i(progSplat.uniforms.uTarget, velocity.read.attach(0));
+  gl.uniform1f(progSplat.uniforms.aspectRatio, canvas.width / canvas.height);
+  gl.uniform2f(progSplat.uniforms.point, x, y);
+  gl.uniform3f(progSplat.uniforms.color, dx, dy, 0);
+  gl.uniform1f(progSplat.uniforms.radius, correctRadius(config.SPLAT_RADIUS / 100));
+  blit(velocity.write);
+  velocity.swap();
+
+  gl.uniform1i(progSplat.uniforms.uTarget, dye.read.attach(0));
+  gl.uniform3f(progSplat.uniforms.color, color[0], color[1], color[2]);
+  blit(dye.write);
+  dye.swap();
+}
+function correctRadius(r) {
+  const aspect = canvas.width / canvas.height;
+  return aspect > 1 ? r * aspect : r;
+}
+function burst(n = 8) {
+  for (let i = 0; i < n; i++) {
+    hueClock = Math.random();
+    const color = inkColor(6);
+    const x = Math.random(), y = Math.random();
+    const dx = 1000 * (Math.random() - 0.5);
+    const dy = 1000 * (Math.random() - 0.5);
+    splat(x, y, dx, dy, color);
+  }
+}
+
+// ---------- interação: mouse e toque ----------
+const pointers = new Map();
+function getPointer(id) {
+  if (!pointers.has(id)) pointers.set(id, { x: 0, y: 0, dx: 0, dy: 0, down: false, moved: false });
+  return pointers.get(id);
+}
+function pointerPos(e) {
+  return { x: e.clientX / innerWidth, y: 1 - e.clientY / innerHeight };
+}
+canvas.addEventListener('pointerdown', e => {
+  const p = getPointer(e.pointerId);
+  const pos = pointerPos(e);
+  p.x = pos.x; p.y = pos.y; p.down = true;
+});
+canvas.addEventListener('pointermove', e => {
+  const p = getPointer(e.pointerId);
+  const pos = pointerPos(e);
+  p.dx = (pos.x - p.x) * config.SPLAT_FORCE;
+  p.dy = (pos.y - p.y) * config.SPLAT_FORCE;
+  p.x = pos.x; p.y = pos.y;
+  p.moved = Math.abs(p.dx) > 0.5 || Math.abs(p.dy) > 0.5;
+});
+addEventListener('pointerup', e => {
+  const p = getPointer(e.pointerId);
+  p.down = false;
+  if (e.pointerType !== 'mouse') pointers.delete(e.pointerId);
+});
+
+// ---------- piloto automático ----------
+// dois "pincéis fantasmas" passeiam em curvas de Lissajous,
+// soltando tinta continuamente — fitas de seda que nunca param
+const emitters = [
+  { fx: 0.31, fy: 0.23, px: 0.0, py: 1.7, hueOff: 0.00, force: 220 },
+  { fx: 0.17, fy: 0.29, px: 2.1, py: 0.4, hueOff: 0.45, force: 180 },
+];
+function autoFlow(t, dt) {
+  for (const e of emitters) {
+    const x = 0.5 + 0.38 * Math.sin(t * e.fx + e.px);
+    const y = 0.5 + 0.34 * Math.sin(t * e.fy + e.py);
+    // derivada da curva = direção do movimento = força aplicada
+    const dx = 0.38 * e.fx * Math.cos(t * e.fx + e.px) * e.force;
+    const dy = 0.34 * e.fy * Math.cos(t * e.fy + e.py) * e.force;
+    hueClock = (t * 0.03 + e.hueOff) % 1;
+    splat(x, y, dx, dy, inkColor(0.55 * dt * 60));
+  }
+}
+
+// ---------- teclado ----------
 const hud = document.getElementById('hud');
-addEventListener('keydown', (e) => {
+addEventListener('keydown', e => {
   switch (e.key) {
-    case 'ArrowRight': state.speed = Math.min(state.speed + 0.25, 5); break;
-    case 'ArrowLeft':  state.speed = Math.max(state.speed - 0.25, -5); break;
-    case 'ArrowUp':    state.targetZoom = Math.max(state.targetZoom * 0.85, 0.8); e.preventDefault(); break;
-    case 'ArrowDown':  state.targetZoom = Math.min(state.targetZoom * 1.18, 20);  e.preventDefault(); break;
-    case ' ':          state.paused = !state.paused; e.preventDefault(); break;
-    case 'c': case 'C': state.palShift = (state.palShift + 1) % 8; break;
-    case 'w':           state.turb = Math.min(state.turb + 0.15, 2.5); break;
-    case 'W':           state.turb = Math.max(state.turb - 0.15, 0.2); break;
+    case ' ':          config.PAUSED = !config.PAUSED; e.preventDefault(); break;
+    case 'b': case 'B': burst(); break;
+    case 'c': case 'C': config.PALETTE = (config.PALETTE + 1) % palettes.length; break;
+    case 'a': case 'A': config.AUTO = !config.AUTO; break;
+    case 'ArrowUp':    config.CURL = Math.min(config.CURL + 5, 60); e.preventDefault(); break;
+    case 'ArrowDown':  config.CURL = Math.max(config.CURL - 5, 0);  e.preventDefault(); break;
+    case 'ArrowRight': config.DENSITY_DISS = Math.max(config.DENSITY_DISS - 0.2, 0.05); break; // rastro dura mais
+    case 'ArrowLeft':  config.DENSITY_DISS = Math.min(config.DENSITY_DISS + 0.2, 4.0);  break; // rastro some rápido
     case 'h': case 'H': hud.classList.toggle('hidden'); break;
   }
 });
+setTimeout(() => hud.classList.add('hidden'), 12000);
 
-// esconde a ajuda sozinha depois de um tempo
-setTimeout(() => hud.classList.add('hidden'), 14000);
+// ---------- passo da simulação ----------
+function step(dt) {
+  gl.disable(gl.BLEND);
+
+  gl.useProgram(progCurl.program);
+  gl.uniform2f(progCurl.uniforms.texelSize, velocity.texelSizeX, velocity.texelSizeY);
+  gl.uniform1i(progCurl.uniforms.uVelocity, velocity.read.attach(0));
+  blit(curlTex);
+
+  gl.useProgram(progVorticity.program);
+  gl.uniform2f(progVorticity.uniforms.texelSize, velocity.texelSizeX, velocity.texelSizeY);
+  gl.uniform1i(progVorticity.uniforms.uVelocity, velocity.read.attach(0));
+  gl.uniform1i(progVorticity.uniforms.uCurl, curlTex.attach(1));
+  gl.uniform1f(progVorticity.uniforms.curl, config.CURL);
+  gl.uniform1f(progVorticity.uniforms.dt, dt);
+  blit(velocity.write);
+  velocity.swap();
+
+  gl.useProgram(progDivergence.program);
+  gl.uniform2f(progDivergence.uniforms.texelSize, velocity.texelSizeX, velocity.texelSizeY);
+  gl.uniform1i(progDivergence.uniforms.uVelocity, velocity.read.attach(0));
+  blit(divergence);
+
+  // reaproveita a pressão do quadro anterior, atenuada
+  // (acelera a convergência do Jacobi sem deixá-la acumular)
+  gl.useProgram(progCopy.program);
+  gl.uniform1i(progCopy.uniforms.uTexture, pressure.read.attach(0));
+  gl.uniform1f(progCopy.uniforms.uScale, 0.8);
+  blit(pressure.write);
+  pressure.swap();
+
+  gl.useProgram(progPressure.program);
+  gl.uniform2f(progPressure.uniforms.texelSize, velocity.texelSizeX, velocity.texelSizeY);
+  gl.uniform1i(progPressure.uniforms.uDivergence, divergence.attach(0));
+  for (let i = 0; i < config.PRESSURE_ITER; i++) {
+    gl.uniform1i(progPressure.uniforms.uPressure, pressure.read.attach(1));
+    blit(pressure.write);
+    pressure.swap();
+  }
+
+  gl.useProgram(progGradient.program);
+  gl.uniform2f(progGradient.uniforms.texelSize, velocity.texelSizeX, velocity.texelSizeY);
+  gl.uniform1i(progGradient.uniforms.uPressure, pressure.read.attach(0));
+  gl.uniform1i(progGradient.uniforms.uVelocity, velocity.read.attach(1));
+  blit(velocity.write);
+  velocity.swap();
+
+  gl.useProgram(progAdvection.program);
+  gl.uniform2f(progAdvection.uniforms.texelSize, velocity.texelSizeX, velocity.texelSizeY);
+  gl.uniform1i(progAdvection.uniforms.uVelocity, velocity.read.attach(0));
+  gl.uniform1i(progAdvection.uniforms.uSource, velocity.read.attach(0));
+  gl.uniform1f(progAdvection.uniforms.dt, dt);
+  gl.uniform1f(progAdvection.uniforms.dissipation, config.VELOCITY_DISS);
+  blit(velocity.write);
+  velocity.swap();
+
+  gl.uniform1i(progAdvection.uniforms.uVelocity, velocity.read.attach(0));
+  gl.uniform1i(progAdvection.uniforms.uSource, dye.read.attach(1));
+  gl.uniform1f(progAdvection.uniforms.dissipation, config.DENSITY_DISS);
+  blit(dye.write);
+  dye.swap();
+}
+
+function render() {
+  gl.useProgram(progDisplay.program);
+  gl.uniform2f(progDisplay.uniforms.texelSize, dye.texelSizeX, dye.texelSizeY);
+  gl.uniform1i(progDisplay.uniforms.uTexture, dye.read.attach(0));
+  blit(null);
+}
 
 // ---------- loop ----------
+let simTime = 0;
 let prev = performance.now();
+burst(10); // primeira explosão de cor para não abrir em preto
+
 function frame(now) {
-  const dt = Math.min((now - prev) / 1000, 0.05);
+  const dt = Math.min((now - prev) / 1000, 1 / 30);
   prev = now;
 
-  if (!state.paused) state.time += dt * state.speed;
+  if (!config.PAUSED) {
+    simTime += dt;
 
-  // inércia: o vórtice persegue o cursor e a força decai sozinha
-  state.smooth.x += (state.mouse.x - state.smooth.x) * (1 - Math.exp(-dt * 5));
-  state.smooth.y += (state.mouse.y - state.smooth.y) * (1 - Math.exp(-dt * 5));
-  if (now - lastMove > 120 && !state.down) state.targetAmp *= Math.exp(-dt * 1.2);
-  state.amp += (state.targetAmp - state.amp) * (1 - Math.exp(-dt * 4));
-  state.spin += dt * 2.0 * (0.3 + state.amp);
-  state.zoom += (state.targetZoom - state.zoom) * (1 - Math.exp(-dt * 4));
+    for (const [, p] of pointers) {
+      if (p.moved) {
+        p.moved = false;
+        hueClock = (hueClock + 0.012) % 1; // o matiz desliza ao longo do arrasto
+        splat(p.x, p.y, p.dx, p.dy, inkColor(p.down ? 1.2 : 0.55));
+      }
+    }
 
-  gl.uniform2f(U.uRes, canvas.width, canvas.height);
-  gl.uniform1f(U.uTime, state.time);
-  gl.uniform2f(U.uMouse, state.smooth.x, state.smooth.y);
-  gl.uniform1f(U.uMouseAmp, state.amp);
-  gl.uniform1f(U.uMouseSpin, state.spin);
-  gl.uniform1f(U.uZoom, state.zoom);
-  gl.uniform1f(U.uPalShift, state.palShift);
-  gl.uniform1f(U.uTurb, state.turb);
+    if (config.AUTO) autoFlow(simTime, dt);
+    step(dt);
+  }
 
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  render();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
