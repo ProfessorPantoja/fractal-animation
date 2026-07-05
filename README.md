@@ -15,6 +15,28 @@ Abra o `index.html` em qualquer navegador moderno (precisa de WebGL2). Não prec
 servidor nem de instalar nada. Em celulares a resolução da simulação é reduzida
 automaticamente para manter a fluidez.
 
+## 🎵 Modo música
+
+O fluido escuta e dança:
+
+- **🎤 Microfone** (botão ou tecla `M`) — reage a qualquer som do ambiente: música na
+  caixa, palmas, voz. O áudio do microfone não é reproduzido (sem microfonia) nem sai
+  do navegador.
+- **🎵 Arquivo** (botão "abrir música" ou arraste um MP3 para a tela) — toca e analisa
+  ao mesmo tempo, em loop.
+
+Como o som vira imagem:
+
+| Elemento do som | Efeito no fluido |
+|---|---|
+| **Batida** (pico nos graves acima da média recente) | anel de tinta explodindo para fora + flash de brilho + pulso de redemoinho + salto de matiz |
+| **Graves/volume** contínuos | quantidade de tinta dos emissores |
+| **Médios** | velocidade dos pincéis automáticos |
+| **Agudos** | turbulência extra (vorticidade) |
+
+A detecção de batida usa média móvel de energia dos graves (~0,8 s) com limiar
+adaptativo e período refratário de 160 ms.
+
 ## Controles
 
 | Controle | Efeito |

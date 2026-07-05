@@ -23,6 +23,14 @@
     background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.25);
     border-radius: 4px; padding: 0 5px; font-family: inherit; font-size: 12px;
   }
+  #hud .row { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+  #hud button {
+    background: rgba(255,255,255,0.12); color: #fff; border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 6px; padding: 5px 10px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  #hud button:hover { background: rgba(255,255,255,0.22); }
+  #hud button.on { background: rgba(80,200,255,0.35); border-color: rgba(120,220,255,0.7); }
+  #audioStatus { margin-top: 4px; font-size: 12px; color: #8fd8ff; min-height: 1em; }
   #err {
     display: none; position: fixed; inset: 0; place-content: center; text-align: center;
     color: #fff; font-family: system-ui, sans-serif; padding: 24px;
@@ -37,7 +45,14 @@
   <kbd>B</kbd> explosão de cor &nbsp; <kbd>C</kbd> troca a paleta<br>
   <kbd>↑</kbd><kbd>↓</kbd> redemoinhos &nbsp; <kbd>←</kbd><kbd>→</kbd> duração do rastro<br>
   <kbd>Espaço</kbd> pausa &nbsp; <kbd>A</kbd> liga/desliga o piloto automático<br>
-  <kbd>H</kbd> esconde &nbsp; · &nbsp; <a href="mosaico.html">versão mosaico →</a>
+  <kbd>H</kbd> esconde &nbsp; <kbd>M</kbd> microfone &nbsp; · &nbsp; <a href="mosaico.html">versão mosaico →</a><br>
+  <b>♪ Música:</b> cada batida explode cor — ou arraste um MP3 pra tela
+  <div class="row">
+    <button id="btnMic">🎤 microfone</button>
+    <button id="btnFile">🎵 abrir música</button>
+    <input type="file" id="fileInput" accept="audio/*" hidden>
+  </div>
+  <div id="audioStatus"></div>
 </div>
 <div id="err">
   <div>
@@ -218,6 +233,7 @@ precision highp float;
 in vec2 vUv, vL, vR, vT, vB; out vec4 frag;
 uniform sampler2D uTexture;
 uniform vec2 texelSize;
+uniform float uBeat;
 void main () {
   vec3 c = texture(uTexture, vUv).rgb;
   // sombreamento sutil: gradiente da densidade vira "relevo" 3D
@@ -231,7 +247,8 @@ void main () {
   float diffuse = clamp(dot(n, vec3(0.0, 0.0, 1.0)) + 0.7, 0.7, 1.15);
   c *= diffuse;
   // tone mapping suave: tinta acumulada satura sem virar mancha chapada
-  c = 1.0 - exp(-c * 1.6);
+  c = 1.0 - exp(-c * (1.6 + 0.5 * uBeat)); // a batida dá um flash de brilho
+
   c = pow(c, vec3(0.9));
   frag = vec4(c, 1.0);
 }`;
@@ -449,14 +466,150 @@ const emitters = [
   { fx: 0.17, fy: 0.29, px: 2.1, py: 0.4, hueOff: 0.45, force: 180 },
 ];
 function autoFlow(t, dt) {
+  // com música: médios aceleram os pincéis, volume dá mais tinta
+  const speedBoost = audio.active ? 1 + 2.5 * audio.mid : 1;
+  const inkBoost   = audio.active ? 0.35 + 2.0 * audio.level : 1;
   for (const e of emitters) {
     const x = 0.5 + 0.38 * Math.sin(t * e.fx + e.px);
     const y = 0.5 + 0.34 * Math.sin(t * e.fy + e.py);
     // derivada da curva = direção do movimento = força aplicada
-    const dx = 0.38 * e.fx * Math.cos(t * e.fx + e.px) * e.force;
-    const dy = 0.34 * e.fy * Math.cos(t * e.fy + e.py) * e.force;
+    const dx = 0.38 * e.fx * Math.cos(t * e.fx + e.px) * e.force * speedBoost;
+    const dy = 0.34 * e.fy * Math.cos(t * e.fy + e.py) * e.force * speedBoost;
     hueClock = (t * 0.03 + e.hueOff) % 1;
-    splat(x, y, dx, dy, inkColor(0.55 * dt * 60));
+    splat(x, y, dx, dy, inkColor(0.55 * dt * 60 * inkBoost));
+  }
+}
+
+// ---------- áudio: microfone ou arquivo, com detector de batidas ----------
+const audio = {
+  ctx: null, analyser: null, freq: null,
+  source: null, mediaEl: null, micStream: null,
+  active: false, mode: null,
+  bass: 0, mid: 0, treble: 0, level: 0,   // bandas suavizadas, 0..1
+  history: [],                            // energia dos graves recente
+  beatCooldown: 0,
+  beatPulse: 0,                           // flash visual da batida (decai)
+  curlBoost: 0,                           // redemoinho extra pós-batida (decai)
+};
+const btnMic = document.getElementById('btnMic');
+const btnFile = document.getElementById('btnFile');
+const fileInput = document.getElementById('fileInput');
+const audioStatus = document.getElementById('audioStatus');
+
+function ensureAudioCtx() {
+  if (!audio.ctx) {
+    audio.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    audio.analyser = audio.ctx.createAnalyser();
+    audio.analyser.fftSize = 1024;
+    audio.analyser.smoothingTimeConstant = 0.5;
+    audio.freq = new Uint8Array(audio.analyser.frequencyBinCount);
+  }
+  if (audio.ctx.state === 'suspended') audio.ctx.resume();
+}
+function stopAudioSource() {
+  if (audio.source) { try { audio.source.disconnect(); } catch (e) {} audio.source = null; }
+  if (audio.micStream) { audio.micStream.getTracks().forEach(t => t.stop()); audio.micStream = null; }
+  if (audio.mediaEl) { audio.mediaEl.pause(); audio.mediaEl = null; }
+  audio.active = false; audio.mode = null;
+  audio.history.length = 0;
+  btnMic.classList.remove('on');
+  btnFile.classList.remove('on');
+  audioStatus.textContent = '';
+}
+async function useMic() {
+  if (audio.mode === 'mic') { stopAudioSource(); return; }
+  stopAudioSource();
+  ensureAudioCtx();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    audio.micStream = stream;
+    audio.source = audio.ctx.createMediaStreamSource(stream);
+    audio.source.connect(audio.analyser); // não vai para os alto-falantes (sem microfonia)
+    audio.active = true; audio.mode = 'mic';
+    btnMic.classList.add('on');
+    audioStatus.textContent = '♪ ouvindo o microfone…';
+  } catch (e) {
+    audioStatus.textContent = 'microfone negado ou indisponível';
+  }
+}
+function useFile(file) {
+  stopAudioSource();
+  ensureAudioCtx();
+  const el = new Audio();
+  el.src = URL.createObjectURL(file);
+  el.loop = true;
+  el.play();
+  audio.mediaEl = el;
+  audio.source = audio.ctx.createMediaElementSource(el);
+  audio.source.connect(audio.analyser);
+  audio.analyser.connect(audio.ctx.destination); // arquivo toca nos alto-falantes
+  audio.active = true; audio.mode = 'file';
+  btnFile.classList.add('on');
+  audioStatus.textContent = '♪ ' + file.name;
+}
+btnMic.addEventListener('click', useMic);
+btnFile.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) useFile(fileInput.files[0]); });
+// arrastar um MP3 para a tela também funciona
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith('audio')) useFile(f);
+});
+
+// batida: energia dos graves saltando acima da média recente
+function updateAudio(dt) {
+  audio.beatCooldown = Math.max(0, audio.beatCooldown - dt);
+  audio.beatPulse *= Math.exp(-dt * 6);
+  audio.curlBoost *= Math.exp(-dt * 3);
+  if (!audio.active) return;
+
+  audio.analyser.getByteFrequencyData(audio.freq);
+  const binHz = audio.ctx.sampleRate / audio.analyser.fftSize;
+  const bandAvg = (f0, f1) => {
+    const i0 = Math.max(1, Math.floor(f0 / binHz)), i1 = Math.min(audio.freq.length - 1, Math.ceil(f1 / binHz));
+    let s = 0;
+    for (let i = i0; i <= i1; i++) s += audio.freq[i];
+    return s / ((i1 - i0 + 1) * 255);
+  };
+  const bass   = bandAvg(30, 180);
+  const mid    = bandAvg(180, 2000);
+  const treble = bandAvg(2000, 9000);
+  const k = 1 - Math.exp(-dt * 8); // suavização
+  audio.bass   += (bass - audio.bass) * k;
+  audio.mid    += (mid - audio.mid) * k;
+  audio.treble += (treble - audio.treble) * k;
+  audio.level  = 0.5 * audio.bass + 0.35 * audio.mid + 0.15 * audio.treble;
+
+  // média móvel dos graves ~0.8s
+  audio.history.push(bass);
+  if (audio.history.length > 48) audio.history.shift();
+  const avg = audio.history.reduce((a, b) => a + b, 0) / audio.history.length;
+
+  if (bass > avg * 1.4 + 0.02 && bass > 0.12 && audio.beatCooldown <= 0 && audio.history.length > 12) {
+    const strength = Math.min((bass - avg) / (avg + 0.001), 3.0);
+    onBeat(0.6 + strength);
+    audio.beatCooldown = 0.16; // refratário: no máx ~6 batidas/s
+  }
+}
+
+// cada batida: anel de splats explodindo para fora + pulso de redemoinho
+function onBeat(strength) {
+  audio.beatPulse = Math.min(audio.beatPulse + 0.5 * strength, 1.5);
+  audio.curlBoost = Math.min(audio.curlBoost + 4 * strength, 14); // pouco: demais desestabiliza a grade
+  hueClock = (hueClock + 0.11) % 1; // cada batida muda o tom da cor
+  const cx = 0.28 + 0.44 * Math.random();
+  const cy = 0.28 + 0.44 * Math.random();
+  const n = 3 + Math.floor(Math.min(strength, 3) * 2);
+  const a0 = Math.random() * Math.PI * 2;
+  for (let i = 0; i < n; i++) {
+    const a = a0 + (i / n) * Math.PI * 2;
+    const F = 320 * strength;
+    splat(cx + 0.02 * Math.cos(a), cy + 0.02 * Math.sin(a),
+          Math.cos(a) * F, Math.sin(a) * F, inkColor(1.6 * strength));
   }
 }
 
@@ -473,6 +626,7 @@ addEventListener('keydown', e => {
     case 'ArrowRight': config.DENSITY_DISS = Math.max(config.DENSITY_DISS - 0.2, 0.05); break; // rastro dura mais
     case 'ArrowLeft':  config.DENSITY_DISS = Math.min(config.DENSITY_DISS + 0.2, 4.0);  break; // rastro some rápido
     case 'h': case 'H': hud.classList.toggle('hidden'); break;
+    case 'm': case 'M': useMic(); break;
   }
 });
 setTimeout(() => hud.classList.add('hidden'), 12000);
@@ -490,7 +644,8 @@ function step(dt) {
   gl.uniform2f(progVorticity.uniforms.texelSize, velocity.texelSizeX, velocity.texelSizeY);
   gl.uniform1i(progVorticity.uniforms.uVelocity, velocity.read.attach(0));
   gl.uniform1i(progVorticity.uniforms.uCurl, curlTex.attach(1));
-  gl.uniform1f(progVorticity.uniforms.curl, config.CURL);
+  gl.uniform1f(progVorticity.uniforms.curl,
+    Math.min(config.CURL + audio.curlBoost + audio.treble * 10.0, 48.0));
   gl.uniform1f(progVorticity.uniforms.dt, dt);
   blit(velocity.write);
   velocity.swap();
@@ -544,8 +699,12 @@ function render() {
   gl.useProgram(progDisplay.program);
   gl.uniform2f(progDisplay.uniforms.texelSize, dye.texelSizeX, dye.texelSizeY);
   gl.uniform1i(progDisplay.uniforms.uTexture, dye.read.attach(0));
+  gl.uniform1f(progDisplay.uniforms.uBeat, audio.beatPulse);
   blit(null);
 }
+
+// gancho para testes automatizados (simula uma batida sem áudio real)
+window.__fluid = { onBeat, burst, config, audio };
 
 // ---------- loop ----------
 let simTime = 0;
@@ -558,6 +717,7 @@ function frame(now) {
 
   if (!config.PAUSED) {
     simTime += dt;
+    updateAudio(dt);
 
     for (const [, p] of pointers) {
       if (p.moved) {
